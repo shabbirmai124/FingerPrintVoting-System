@@ -1,0 +1,5 @@
+{
+  "name": "FingerPrintVoting-System",
+  "description": "Simulated fingerprint-based electronic voting system with SHA-256 fingerprint hashing, candidate registration, voter authentication, one-person one-vote enforcement, and live election results.",
+  "requestFramePermissions": []
+}

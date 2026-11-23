@@ -1,186 +1,140 @@
-import hashlib
-import time
-import os
+"""
+Entry point for the High-Accuracy PyFingerprint + Tkinter + SQLite Voting System.
 
-def clear_screen():
-    if os.name == 'nt':
-        _ = os.system('cls')
-    else:
-        _ = os.system('clear')
+Run:
+  python3 main.py           # Launches Tkinter desktop / Raspberry Pi GUI (falls back to CLI if headless)
+  python3 main.py --cli     # Launches interactive terminal mode
+  python3 main.py --gui     # Forces Tkinter GUI mode
+"""
 
-def hash_data(data):
-    return hashlib.sha256(data.encode()).hexdigest()
+from __future__ import annotations
 
-class Voter:
-    def __init__(self, voter_id, name, fingerprint_id_hash):
-        self.voter_id = voter_id
-        self.name = name
-        self.fingerprint_id_hash = fingerprint_id_hash
-        self.has_voted = False
+import argparse
+import sys
 
-    def __str__(self):
-        return f"ID: {self.voter_id}, Name: {self.name}, Has Voted: {self.has_voted}"
-
-class Candidate:
-    def __init__(self, candidate_id, name):
-        self.candidate_id = candidate_id
-        self.name = name
-        self.vote_count = 0
-
-    def __str__(self):
-        return f"ID: {self.candidate_id}, Name: {self.name}, Votes: {self.vote_count}"
-
-class VotingMachine:
-    def __init__(self):
-        self.registered_voters = {}
-        self.candidates = {}
-        self.election_active = False
-        self._next_voter_reg_id = 1
-        self._next_candidate_id = 1
-
-    def add_candidate(self, name):
-        if self.election_active:
-            print("Cannot add candidates while the election is active.")
-            return None
-        for existing_candidate in self.candidates.values():
-            if existing_candidate.name.lower() == name.lower():
-                print(f"Error: Candidate '{name}' already exists.")
-                return None
-        candidate_id = self._next_candidate_id
-        candidate = Candidate(candidate_id, name)
-        self.candidates[candidate_id] = candidate
-        self._next_candidate_id += 1
-        print(f"Candidate '{name}' added successfully with ID {candidate_id}.")
-        return candidate
-
-    def register_voter(self, name, fingerprint_id):
-        if self.election_active:
-            print("Cannot register new voters while the election is active.")
-            return False
-        if not fingerprint_id:
-            print("Error: Fingerprint ID cannot be empty.")
-            return False
-        fingerprint_id_hash = hash_data(fingerprint_id)
-        if fingerprint_id_hash in self.registered_voters:
-            print(f"Error: This fingerprint (ID: {fingerprint_id}) is already registered.")
-            print(f"Registered to: {self.registered_voters[fingerprint_id_hash].name}")
-            return False
-        voter_id = self._next_voter_reg_id
-        voter = Voter(voter_id, name, fingerprint_id_hash)
-        self.registered_voters[fingerprint_id_hash] = voter
-        self._next_voter_reg_id += 1
-        print(f"Voter '{name}' registered successfully (Reg ID: {voter_id}).")
-        return True
-
-    def start_election(self):
-        if not self.candidates:
-            print("Cannot start election: No candidates have been added.")
-            return False
-        if not self.registered_voters:
-            print("Cannot start election: No voters have been registered.")
-            return False
-        print("\n--- Election Started ---")
-        self.election_active = True
-        return True
-
-    def stop_election(self):
-        print("\n--- Election Stopped ---")
-        self.election_active = False
-
-    def authenticate_voter(self, provided_fingerprint_id):
-        if not self.election_active:
-            print("Election is not currently active.")
-            return None
-        provided_fingerprint_hash = hash_data(provided_fingerprint_id)
-        voter = self.registered_voters.get(provided_fingerprint_hash)
-        if voter is None:
-            print("Authentication Failed: Fingerprint not recognized.")
-            return None
-        if voter.has_voted:
-            print(f"Authentication Failed: Voter {voter.name} (ID: {voter.voter_id}) has already voted.")
-            return None
-        print(f"Authentication Successful: Welcome {voter.name} (ID: {voter.voter_id}).")
-        return voter
-
-    def cast_vote(self):
-        if not self.election_active:
-            print("Voting is currently closed.")
-            return
-        if not self.candidates:
-            print("No candidates are available to vote for.")
-            return
-        print("\n--- Cast Your Vote ---")
-        fingerprint_id = input("Please enter your unique Fingerprint ID: ")
-        voter = self.authenticate_voter(fingerprint_id)
-        if voter:
-            print("\nPlease choose a candidate:")
-            candidate_list = list(self.candidates.values())
-            for i, candidate in enumerate(candidate_list):
-                print(f"{i + 1}. {candidate.name}")
-            while True:
-                try:
-                    choice_num = int(input(f"Enter the number (1-{len(candidate_list)}) of your chosen candidate: "))
-                    if 1 <= choice_num <= len(candidate_list):
-                        chosen_candidate_obj = candidate_list[choice_num - 1]
-                        break
-                    else:
-                        print("Invalid choice number. Please try again.")
-                except ValueError:
-                    print("Invalid input. Please enter a number.")
-            chosen_candidate_obj.vote_count += 1
-            voter.has_voted = True
-            print("\nVote successfully cast for:", chosen_candidate_obj.name)
-            time.sleep(2)
-
-    def display_results(self):
-        print("\n--- Election Results ---")
-        total_votes = sum(c.vote_count for c in self.candidates.values())
-        print(f"Total Votes Cast: {total_votes}\n")
-        sorted_candidates = sorted(self.candidates.values(), key=lambda c: c.vote_count, reverse=True)
-        for candidate in sorted_candidates:
-            print(f"- {candidate.name}: {candidate.vote_count} votes")
-
-    def display_voter_status(self):
-        print("\n--- Registered Voter Status ---")
-        for voter in self.registered_voters.values():
-            status = "Voted" if voter.has_voted else "Not Voted"
-            print(f"- {voter.name} (Reg ID: {voter.voter_id}): {status}")
+from python_voting_system.biometric_sensor import BiometricConfig, FingerprintSensorManager
+from python_voting_system.database import VotingDatabase
 
 
-def main_menu(machine):
+def run_cli(db_path: str = "voting_system.db") -> None:
+    db = VotingDatabase(db_path=db_path)
+    cfg = db.get_config()
+    sensor = FingerprintSensorManager(
+        db,
+        BiometricConfig(
+            security_level=int(cfg.get("security_level", 5)),
+            min_confidence_score=int(cfg.get("min_confidence_score", 85)),
+        ),
+    )
+    ok_hw, hw_msg = sensor.connect()
+    print(f"\n[Sensor] {hw_msg}")
+
     while True:
-        clear_screen()
-        print("\n===== Simulated Fingerprint Voting System =====")
+        cfg = db.get_config()
+        print("\n===== High-Accuracy Biometric Voting System (SQLite + PyFingerprint) =====")
+        print(f"Election: {cfg['title']} | Status: {cfg['status'].upper()} | Security Level: {cfg['security_level']}")
         print("1. Add Candidate")
-        print("2. Register Voter")
+        print("2. Enroll Voter (Dual-Pass Biometric)")
         print("3. Start Election")
-        print("4. Cast Vote")
+        print("4. Authenticate & Cast Secret Ballot")
         print("5. Stop Election")
-        print("6. Display Election Results")
-        print("7. Display Voter Status")
-        print("8. Exit")
-        choice = input("Enter your choice: ")
-        try:
-            choice = int(choice)
-        except ValueError:
-            continue
-        clear_screen()
-        if choice == 1:
-            machine.add_candidate(input("Enter candidate name: "))
-        elif choice == 2:
-            machine.register_voter(input("Enter voter's full name: "), input("Enter Fingerprint ID: "))
-        elif choice == 3:
-            machine.start_election()
-        elif choice == 4:
-            machine.cast_vote()
-        elif choice == 5:
-            machine.stop_election()
-        elif choice == 6:
-            machine.display_results()
-        elif choice == 7:
-            machine.display_voter_status()
-        elif choice == 8:
+        print("6. Display Live Results & Verify Hash Chain")
+        print("7. Display Voter Roll")
+        print("8. Connect Hardware Sensor Port")
+        print("9. Exit")
+
+        choice = input("Select option (1-9): ").strip()
+        if choice == "1":
+            name = input("Candidate full name: ")
+            party = input("Party / affiliation [Independent]: ") or "Independent"
+            symbol = input("Symbol code [CAN]: ") or "CAN"
+            _, msg, _ = db.add_candidate(name, party, symbol)
+            print(msg)
+        elif choice == "2":
+            nid = input("National / Voter ID: ")
+            name = input("Voter full name: ")
+            seed1 = None if ok_hw else input("Biometric Pass 1 ridge seed: ")
+            seed2 = None if ok_hw else (input("Biometric Pass 2 ridge seed [same]: ") or seed1)
+            enr = sensor.enroll_high_accuracy(seed1, seed2)
+            if not enr.ok or enr.template_position is None or enr.template_bytes is None:
+                print(enr.message)
+                continue
+            _, msg, _ = db.enroll_voter(nid, name, enr.template_position, enr.template_bytes, enr.consistency_score)
+            print(msg)
+        elif choice == "3":
+            _, msg = db.start_election()
+            print(msg)
+        elif choice == "4":
+            seed = None if ok_hw else input("Scan fingerprint (ridge seed): ")
+            match = sensor.verify_high_accuracy(seed)
+            print(match.message)
+            if not match.matched or match.template_position is None:
+                continue
+            voter = db.get_voter_by_position(match.template_position)
+            if not voter:
+                print("Voter record not found in SQLite.")
+                continue
+            if voter["has_voted"]:
+                print(f"Blocked: {voter['full_name']} has already voted.")
+                continue
+            cands = db.list_candidates()
+            for c in cands:
+                print(f"  {c['id']}. [{c['symbol_code']}] {c['name']} ({c['party']})")
+            try:
+                cid = int(input("Enter Candidate ID: "))
+            except ValueError:
+                print("Invalid candidate ID.")
+                continue
+            _, msg, receipt = db.cast_vote_atomic(voter["id"], cid, match.confidence_score)
+            print(msg)
+            if receipt:
+                print(f"Receipt Hash: {receipt}")
+        elif choice == "5":
+            _, msg = db.stop_election()
+            print(msg)
+        elif choice == "6":
+            cands = sorted(db.list_candidates(), key=lambda x: x["vote_count"], reverse=True)
+            total = sum(c["vote_count"] for c in cands)
+            print(f"\nTotal Ballots: {total}")
+            for c in cands:
+                pct = (c["vote_count"] / total * 100.0) if total > 0 else 0.0
+                print(f" - {c['name']} ({c['party']}): {c['vote_count']} ({pct:.1f}%)")
+            chain = db.verify_ballot_chain()
+            print(f"Chain Integrity: {chain['valid']} ({chain['reason']})")
+        elif choice == "7":
+            for v in db.list_voters():
+                st = "Voted" if v["has_voted"] else "Eligible"
+                print(f" - [{v['national_id']}] {v['full_name']} | Slot #{v['template_position']} | {st}")
+        elif choice == "8":
+            print("Detected ports:", ", ".join(sensor.discover_ports()))
+            port = input(f"Serial port [{sensor.config.port}]: ").strip() or sensor.config.port
+            ok_hw, msg = sensor.connect(port=port)
+            print(msg)
+        elif choice == "9":
             break
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="High-Accuracy Fingerprint Voting System")
+    parser.add_argument("--cli", action="store_true", help="Run in terminal CLI mode")
+    parser.add_argument("--gui", action="store_true", help="Force Tkinter GUI mode")
+    parser.add_argument("--db", default="voting_system.db", help="SQLite database path")
+    args = parser.parse_args()
+
+    if args.cli:
+        run_cli(db_path=args.db)
+        return
+
+    try:
+        from python_voting_system.gui_app import launch_gui
+        launch_gui(db_path=args.db)
+    except Exception as exc:
+        if args.gui:
+            print(f"Unable to launch Tkinter GUI: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Display unavailable ({exc}); launching CLI mode...")
+        run_cli(db_path=args.db)
+
+
 if __name__ == "__main__":
-    main_menu(VotingMachine())
+    main()
